@@ -1,0 +1,38 @@
+# OS
+.DS_Store
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+env/
+venv/
+.venv/
+backend/venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Node/React
+node_modules/
+frontend/node_modules/
+dist/
+build/
+.next/
+.cache/
+
+# Environment & databases
+.env
+*.db
+backend/pm_insight.db
+
+# Logs
+*.log
+logs/
