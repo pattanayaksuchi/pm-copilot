@@ -2,6 +2,14 @@ PM Copilot (Monorepo)
 
 A lightweight product insights dashboard that clusters recent tickets from Slack, Zendesk, and Jira into themes, and surfaces Top 10 Issues and Feature Requests. Monorepo contains a FastAPI backend and a React frontend.
 
+**Features**
+- Theming: Clusters recent tickets into interpretable themes with a label and hint.
+- Top 10 lists: Quick view of the most frequent Issues and Feature Requests.
+- Filters: Slice by source (`slack`, `zendesk`, `jira`) and type (`issue`, `feature_request`, `unknown`).
+- CSV export: Download Top 10 or full theme breakdowns as CSV.
+- On-demand sync: Trigger per‑source or full sync from the API.
+- Light footprint: Uses SQLite by default; no external infra required for dev.
+
 **Overview**
 - Backend: FastAPI service that syncs data sources, embeds + clusters tickets, builds themes, and exposes CSV exports.
 - Frontend: Minimal React app to view themes, Top 10 lists, and export CSVs.
@@ -53,6 +61,32 @@ Notes:
   - Refresh: loads themes and top lists via `/insights/themes/v2`
   - Load Top 10: loads only Top 10 via `/insights/top10`
   - Export Top 10 / Themes: downloads CSVs respecting current filters
+
+**How To Use**
+- Start services: run backend (`uvicorn backend.main:app --reload`) and frontend (`npm start` in `frontend/`).
+- Choose time window: set `Days` (e.g., 30) to analyze recent activity.
+- Adjust cluster count: set `K` to control number of themes (e.g., 8–20).
+- Apply filters:
+  - `Source`: All, Slack, Zendesk, or JIRA.
+  - `Type`: All, Issue, Feature Request, or Unknown.
+- Load data:
+  - Use `Refresh` to load Themes + Top 10 with filters applied.
+  - Use `Load Top 10` to refresh only the Top 10 lists.
+- Explore themes:
+  - Each theme shows a hint, type, and size; expand to see tickets with links.
+- Export:
+  - `Export Top 10 CSV` → columns: `rank,type,title,source,url`.
+  - `Export Themes CSV` → columns: `theme_label,type,size,hint,ticket_id,ticket_title,ticket_source,ticket_url`.
+
+**Syncing Data**
+- Full sync: `POST /sync/run`
+- Per‑source: `POST /sync/{zendesk|jira|slack}`
+- Scheduler: configured via `SYNC_DAILY_CRON_HOUR` and `SYNC_DAILY_CRON_MINUTE`; enabled at app startup.
+
+**Tips**
+- Start small: lower `k` for broader themes; raise it for granularity.
+- Filters recompute Top 10 based on filtered tickets in each theme.
+- For Postgres, set `DATABASE_URL` and ensure the DB is reachable before running.
 
 **Git Workflow (basics)**
 - First push: add a remote and push `main`
