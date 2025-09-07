@@ -49,6 +49,10 @@ export default function App() {
   const [chatAnswer, setChatAnswer] = useState("");
   const [chatResults, setChatResults] = useState([]);
   const [chatLoading, setChatLoading] = useState(false);
+  // Suggestions state
+  const [suggestions, setSuggestions] = useState([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionCount, setSuggestionCount] = useState(5);
 
   const qs = useMemo(() => {
     const p = new URLSearchParams({ days: String(days), k: String(k), source, kind, vertical, include_internal: String(includeInternal) });
@@ -66,6 +70,20 @@ export default function App() {
       setErr(String(e));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchSuggestions = async () => {
+    setSuggestionsLoading(true); setErr(null);
+    try {
+      const url = `${API}/insights/theme_suggestions?days=${days}&k=${k}&top_n=${suggestionCount}&include_internal=${includeInternal}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      setSuggestions(data.suggestions || []);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setSuggestionsLoading(false);
     }
   };
 
@@ -160,8 +178,34 @@ export default function App() {
         <label>Days:
           <input type="number" min="1" max="365" value={days} onChange={e => setDays(Number(e.target.value))} style={{ marginLeft: 6, width: 80 }} />
         </label>
-        <label>K (clusters):
-          <input type="number" min="1" max="100" value={k} onChange={e => setK(Number(e.target.value))} style={{ marginLeft: 6, width: 80 }} />
+        <label>
+          Number of themes
+          <span
+            title="Controls clustering granularity: lower = broader themes, higher = more granular. Try 8–20 to start."
+            aria-label="Theme granularity help"
+            style={{
+              display: 'inline-block',
+              marginLeft: 6,
+              width: 16,
+              height: 16,
+              borderRadius: 8,
+              textAlign: 'center',
+              lineHeight: '16px',
+              background: '#eef8ff',
+              color: '#1b6dd1',
+              fontSize: 12,
+              cursor: 'help'
+            }}
+          >i</span>:
+          <input
+            title="Higher = more granular themes"
+            type="number"
+            min="1"
+            max="100"
+            value={k}
+            onChange={e => setK(Number(e.target.value))}
+            style={{ marginLeft: 6, width: 80 }}
+          />
         </label>
         <label>Source:
           <select value={source} onChange={e => setSource(e.target.value)} style={{ marginLeft: 6 }}>
@@ -171,7 +215,7 @@ export default function App() {
             <option value="jira">JIRA</option>
           </select>
         </label>
-        <label>Type:
+        <label>Item type:
           <select value={kind} onChange={e => setKind(e.target.value)} style={{ marginLeft: 6 }}>
             <option value="all">All</option>
             <option value="issue">Issue</option>
@@ -179,7 +223,7 @@ export default function App() {
             <option value="unknown">Unknown</option>
           </select>
         </label>
-        <label>Product:
+        <label>Product vertical:
           <select value={vertical} onChange={e => setVertical(e.target.value)} style={{ marginLeft: 6 }}>
             {VERTICAL_OPTIONS.map(([val, label]) => (
               <option key={val} value={val}>{label}</option>
@@ -197,6 +241,11 @@ export default function App() {
         <button onClick={fetchTop10} disabled={loading}>
           {loading ? "Loading…" : "Load Top 10"}
         </button>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          Suggestions:
+          <input type="number" min="1" max="20" value={suggestionCount} onChange={e => setSuggestionCount(Number(e.target.value))} style={{ width: 60 }} />
+          <button onClick={fetchSuggestions} disabled={suggestionsLoading}>{suggestionsLoading ? 'Loading…' : 'Load'}</button>
+        </label>
         <button onClick={exportTop10} disabled={!top}>Export Top 10 CSV</button>
         <button onClick={exportThemes} disabled={!themes}>Export Themes CSV</button>
       </div>
@@ -259,6 +308,43 @@ export default function App() {
           )}
         </Card>
       </div>
+
+      {/* Suggested Themes */}
+      <h2 style={{ marginTop: 24 }}>Suggested Themes</h2>
+      {!suggestions || suggestions.length === 0 ? (
+        <p style={{ opacity: 0.7 }}>Click "Load" next to Suggestions to see prioritized themes to act on.</p>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(360px,1fr))', gap: 12 }}>
+          {suggestions.map((sug, i) => (
+            <div key={i} style={{ border: '1px solid #e5e5e5', borderRadius: 12, padding: 14, background: '#fff' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>#{sug.label} · {sug.type}</div>
+                  <div style={{ fontWeight: 600 }}>{sug.hint || '(no hint)'}</div>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <span style={{ fontSize: 12, background: '#f5f5f5', padding: '4px 8px', borderRadius: 999 }}>{sug.size} tickets</span>
+                  <span title="Priority score" style={{ fontSize: 12, background: '#eef8ff', padding: '4px 8px', borderRadius: 999 }}>score {sug.score?.toFixed?.(2)}</span>
+                </div>
+              </div>
+              {sug.top_vertical && (
+                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>Vertical: {sug.top_vertical}</div>
+              )}
+              <div style={{ marginTop: 8 }}>{sug.suggested_action}</div>
+              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>{sug.rationale}</div>
+              {sug.samples?.length > 0 && (
+                <ul style={{ marginTop: 8 }}>
+                  {sug.samples.map((t, j) => (
+                    <li key={j}>
+                      <a href={t.url} target="_blank" rel="noreferrer">{t.title || t.url}</a>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Themes Grid */}
       <h2 style={{ marginTop: 24 }}>Themes</h2>
