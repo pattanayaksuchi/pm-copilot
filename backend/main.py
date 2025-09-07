@@ -136,11 +136,11 @@ def insights_top10(days: int = 30, k: int = 12, include_internal: bool = False):
     }
 
 @app.get("/insights/theme_suggestions")
-def insights_theme_suggestions(days: int = 30, k: int = 12, top_n: int = 5):
+def insights_theme_suggestions(days: int = 30, k: int = 12, top_n: int = 5, include_internal: bool = False):
     """
     Suggest themes for PM focus with a simple priority score.
     """
-    return suggest_themes(days=days, k=k, top_n=top_n)
+    return suggest_themes(days=days, k=k, top_n=top_n, include_internal=include_internal)
 
 @app.get("/export/top10.csv")
 def export_top10_csv(days: int = 30, k: int = 12, source: str = "all", kind: str = "all", vertical: str = "all", include_internal: bool = False):
