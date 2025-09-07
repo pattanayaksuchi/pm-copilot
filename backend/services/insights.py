@@ -200,7 +200,7 @@ def build_themes_filtered(days: int = 30, k: int = 12, source: Optional[str] = N
     return data
 
 
-def suggest_themes(days: int = 30, k: int = 12, top_n: int = 5) -> Dict[str, Any]:
+def suggest_themes(days: int = 30, k: int = 12, top_n: int = 5, include_internal: bool = False) -> Dict[str, Any]:
     """
     Produce theme suggestions for PMs with a simple priority score.
 
@@ -210,7 +210,7 @@ def suggest_themes(days: int = 30, k: int = 12, top_n: int = 5) -> Dict[str, Any
     Returns a dict with run_id and a sorted list of suggestions.
     """
     # Build base themes first
-    data = build_themes(days=days, k=k)
+    data = build_themes(days=days, k=k, include_internal=include_internal)
     themes = data.get("themes", [])
     if not themes:
         return {"run_id": data.get("run_id"), "suggestions": []}
