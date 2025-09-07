@@ -1,24 +1,28 @@
 import numpy as np
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, and_
 from sqlalchemy.orm import Session
 from nlp.preprocess import clean_text
 from nlp.embeddings import embed_texts
 from nlp.cluster import kmeans_clusters, top_terms_for_cluster
 from nlp.classify import classify_ticket
+from nlp.product_verticals import classify_product_vertical
 from typing import Optional
 
 
-from db import SessionLocal, Ticket, TicketEmbedding, Theme
+from db import SessionLocal, Ticket, TicketEmbedding, Theme, TicketProductVertical, upsert_ticket_vertical
 
 import uuid
 
-def _tickets_since_days(session: Session, days: int = 30) -> List[Ticket]:
+def _tickets_since_days(session: Session, days: int = 30, include_internal: bool = False) -> List[Ticket]:
     since = datetime.utcnow() - timedelta(days=days)
-    stmt = select(Ticket).where(
-        or_(Ticket.source_updated_at == None, Ticket.source_updated_at >= since)
-    )
+    base = or_(Ticket.source_updated_at == None, Ticket.source_updated_at >= since)
+    if include_internal:
+        stmt = select(Ticket).where(base)
+    else:
+        # exclude internal by default: is_internal is NULL or False
+        stmt = select(Ticket).where(and_(base, or_(Ticket.is_internal == None, Ticket.is_internal == False)))
     return session.execute(stmt).scalars().all()
 
 def _ensure_embeddings(session: Session, tickets: List[Ticket]) -> np.ndarray:
@@ -46,21 +50,33 @@ def _ensure_embeddings(session: Session, tickets: List[Ticket]) -> np.ndarray:
             ordered.append(t)
     return np.vstack(vectors) if vectors else np.zeros((0,384), dtype="float32"), ordered
 
-def _classify_and_count(tickets: List[Ticket]) -> Dict[str, int]:
+def _classify_and_count(session: Session, tickets: List[Ticket]) -> Dict[str, int]:
     counts = {"issue":0, "feature_request":0, "unknown":0}
     for t in tickets:
+        # Type classification (existing MVP)
         t.type = classify_ticket(t.source, t.title or "", t.content or "", t.labels or "", t.status or "")
         counts[t.type] = counts.get(t.type, 0) + 1
+
+        # Product vertical classification (new)
+        v_slug, v_name, v_conf, v_exp = classify_product_vertical(
+            t.source or "",
+            t.title or "",
+            t.content or "",
+            t.labels or "",
+            t.project or "",
+        )
+        if v_slug and v_conf >= 0.80:
+            upsert_ticket_vertical(session, ticket_id=t.id, vertical_slug=v_slug, vertical_name=v_name, confidence=v_conf, explanation=v_exp)
     return counts
 
-def build_themes(days: int = 30, k: int = 12) -> Dict[str, Any]:
+def build_themes(days: int = 30, k: int = 12, include_internal: bool = False) -> Dict[str, Any]:
     with SessionLocal() as session:
-        tickets = _tickets_since_days(session, days=days)
+        tickets = _tickets_since_days(session, days=days, include_internal=include_internal)
         if not tickets:
             return {"run_id": None, "themes": [], "top_issues": [], "top_features": []}
 
         # (1) classify/update types
-        _ = _classify_and_count(tickets)
+        _ = _classify_and_count(session, tickets)
         session.commit()
 
         # (2) ensure embeddings
@@ -82,6 +98,13 @@ def build_themes(days: int = 30, k: int = 12) -> Dict[str, Any]:
             theme_buckets[int(lab)][t.type] = theme_buckets[int(lab)].get(t.type, 0) + 1
 
         out_themes = []
+        # Prefetch product verticals for tickets to include in response
+        pv_map = {}
+        for t in ordered:
+            tv = session.query(TicketProductVertical).filter_by(ticket_id=t.id).one_or_none()
+            if tv:
+                pv_map[t.id] = {"vertical": tv.vertical_name, "slug": tv.vertical_slug, "confidence": tv.confidence}
+
         for lab, data in theme_buckets.items():
             size = len(data["tickets"])
             # decide theme type by majority
@@ -94,7 +117,16 @@ def build_themes(days: int = 30, k: int = 12) -> Dict[str, Any]:
                 "hint": hints.get(lab, ""),
                 "type": maj_type,
                 "size": size,
-                "tickets": [{"id": t.id, "title": t.title, "source": t.source, "url": t.url, "type": t.type} for t in data["tickets"]]
+                "tickets": [{
+                    "id": t.id,
+                    "title": t.title,
+                    "source": t.source,
+                    "url": t.url,
+                    "type": t.type,
+                    "product_vertical": (pv_map.get(t.id) or {}).get("vertical"),
+                    "product_vertical_slug": (pv_map.get(t.id) or {}).get("slug"),
+                    "product_vertical_confidence": (pv_map.get(t.id) or {}).get("confidence"),
+                } for t in data["tickets"]]
             })
         session.commit()
 
@@ -131,9 +163,9 @@ def _filter_tickets(tickets: List[Ticket], source: Optional[str]=None, type: Opt
         out = [t for t in out if (t.type or "unknown").lower() == kind.lower()]
     return out
 
-def build_themes_filtered(days: int = 30, k: int = 12, source: Optional[str] = None, kind: Optional[str] = None):
+def build_themes_filtered(days: int = 30, k: int = 12, source: Optional[str] = None, kind: Optional[str] = None, vertical: Optional[str] = None, include_internal: bool = False):
     """Convenience wrapper: build themes then filter tickets in each theme."""
-    data = build_themes(days=days, k=k)
+    data = build_themes(days=days, k=k, include_internal=include_internal)
     if not data["themes"]:
         return data
     # Filter tickets inside themes
@@ -145,6 +177,11 @@ def build_themes_filtered(days: int = 30, k: int = 12, source: Optional[str] = N
                 continue
             if kind and kind.lower() in ("issue","feature_request","unknown") and (t["type"] or "unknown").lower() != kind.lower():
                 continue
+            if vertical and vertical.lower() != "all":
+                vslug = (t.get("product_vertical_slug") or "").lower()
+                vname = (t.get("product_vertical") or "").lower()
+                if not (vertical.lower() == vslug or vertical.lower() == vname):
+                    continue
             filt.append(t)
         if filt:
             th2 = {**th, "tickets": filt, "size": len(filt)}
@@ -161,3 +198,102 @@ def build_themes_filtered(days: int = 30, k: int = 12, source: Optional[str] = N
     data["top_issues"] = _pick_top("issue")
     data["top_features"] = _pick_top("feature_request")
     return data
+
+
+def suggest_themes(days: int = 30, k: int = 12, top_n: int = 5) -> Dict[str, Any]:
+    """
+    Produce theme suggestions for PMs with a simple priority score.
+
+    Score formula (0..1):
+      0.6 * normalized_size + 0.3 * recency_ratio_7d + 0.1 * high_priority_ratio
+
+    Returns a dict with run_id and a sorted list of suggestions.
+    """
+    # Build base themes first
+    data = build_themes(days=days, k=k)
+    themes = data.get("themes", [])
+    if not themes:
+        return {"run_id": data.get("run_id"), "suggestions": []}
+
+    # Compute max size for normalization
+    max_size = max((th.get("size", 0) for th in themes), default=1) or 1
+
+    now = datetime.utcnow()
+    week_ago = now - timedelta(days=7)
+
+    suggestions = []
+    with SessionLocal() as session:
+        for th in themes:
+            t_ids = [t.get("id") for t in th.get("tickets", []) if t.get("id") is not None]
+            if not t_ids:
+                continue
+            # Pull extra fields needed for scoring
+            q = session.query(Ticket).filter(Ticket.id.in_(t_ids))
+            rows: List[Ticket] = q.all()
+
+            size = int(th.get("size", len(rows)))
+            recent_7d = sum(1 for r in rows if (r.source_updated_at or r.created_at or now) >= week_ago)
+            high_priority = 0
+            for r in rows:
+                pr = (r.priority or "").lower()
+                if any(p in pr for p in ["p0", "p1", "blocker", "critical", "high"]):
+                    high_priority += 1
+
+            # Simple majority vertical for context
+            vnames = [
+                (tht.get("product_vertical") or "").strip().lower()
+                for tht in th.get("tickets", [])
+                if (tht.get("product_vertical") or "").strip()
+            ]
+            top_vertical = ""
+            if vnames:
+                from collections import Counter
+                top_vertical = Counter(vnames).most_common(1)[0][0]
+
+            # Ratios and score
+            normalized_size = size / max_size
+            recency_ratio = (recent_7d / size) if size else 0.0
+            high_priority_ratio = (high_priority / size) if size else 0.0
+            score = 0.6 * normalized_size + 0.3 * recency_ratio + 0.1 * high_priority_ratio
+
+            # Suggested action
+            typ = th.get("type", "mixed")
+            hint = th.get("hint", "")
+            if typ == "issue":
+                action = f"Prioritize a bugfix sprint for: {hint}"
+            elif typ == "feature_request":
+                action = f"Scope an epic and RFC for: {hint}"
+            else:
+                action = f"Triage and split theme into fixes and features: {hint}"
+
+            # Rationale blurb
+            rationale = (
+                f"{size} tickets; {recent_7d} updated in last 7d; "
+                f"{high_priority} high-priority"
+            )
+
+            # Surface a couple of example tickets
+            samples = []
+            for t in th.get("tickets", [])[:2]:
+                samples.append({"title": t.get("title", ""), "url": t.get("url", "")})
+
+            suggestions.append({
+                "label": th.get("label"),
+                "type": typ,
+                "hint": hint,
+                "size": size,
+                "score": round(float(score), 4),
+                "recent_7d": recent_7d,
+                "high_priority": high_priority,
+                "top_vertical": top_vertical or None,
+                "suggested_action": action,
+                "rationale": rationale,
+                "samples": samples,
+            })
+
+    # Sort and trim
+    suggestions.sort(key=lambda x: x["score"], reverse=True)
+    if top_n and top_n > 0:
+        suggestions = suggestions[: top_n]
+
+    return {"run_id": data.get("run_id"), "suggestions": suggestions}

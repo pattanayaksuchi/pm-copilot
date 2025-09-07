@@ -1,4 +1,5 @@
 from sklearn.cluster import KMeans
+from joblib import parallel_backend
 import numpy as np
 
 def kmeans_clusters(vectors: np.ndarray, k: int, random_state: int = 42):
@@ -6,7 +7,10 @@ def kmeans_clusters(vectors: np.ndarray, k: int, random_state: int = 42):
         return np.array([]), None
     k = max(1, min(k, len(vectors)))
     km = KMeans(n_clusters=k, n_init=10, random_state=random_state)
-    labels = km.fit_predict(vectors)
+    # Force joblib to use threads instead of processes to avoid leaked
+    # loky semaphores on some Python/macOS setups (harmless but noisy).
+    with parallel_backend("threading"):
+        labels = km.fit_predict(vectors)
     return labels, km.cluster_centers_
 
 def top_terms_for_cluster(texts: list[str], labels, k_top=3):

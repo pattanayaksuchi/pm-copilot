@@ -36,7 +36,10 @@ def _search_post_jql(headers, jql, next_token=None, max_results=100):
     payload = {
         "jql": jql,
         "maxResults": max_results,
-        "fields": ["summary","description","status","priority","assignee","reporter","created","updated","labels","project"],
+        "fields": [
+            "summary","description","status","priority","assignee","reporter",
+            "created","updated","labels","project","components"
+        ],
     }
     if next_token:
         payload["nextPageToken"] = next_token
@@ -58,6 +61,11 @@ def fetch_issues(updated_after: datetime | None):
             desc = f.get("description")
             if isinstance(desc, dict):  # ADF → stringify for MVP
                 desc = str(desc)
+            # Merge labels + component names into a single labels csv for rule matching
+            raw_labels = list(f.get("labels") or [])
+            comps = f.get("components") or []
+            comp_names = [c.get("name") for c in comps if isinstance(c, dict) and c.get("name")]
+            merged_labels = [str(x) for x in (raw_labels + comp_names)]
             items.append({
                 "external_id": key,
                 "title": f.get("summary") or "",
@@ -66,7 +74,7 @@ def fetch_issues(updated_after: datetime | None):
                 "priority": (f.get("priority") or {}).get("name") or "",
                 "assignee": (f.get("assignee") or {}).get("displayName") or "",
                 "requester": (f.get("reporter") or {}).get("displayName") or "",
-                "labels": ",".join(f.get("labels") or []),
+                "labels": ",".join(merged_labels),
                 "url": f"https://{J_DOMAIN}/browse/{key}",
                 "project": (f.get("project") or {}).get("key") or "",
                 "source_created_at": _to_dt(f.get("created")),

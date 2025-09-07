@@ -4,7 +4,7 @@ load_dotenv(find_dotenv())  # loads the nearest .env up the tree
 import os
 from datetime import datetime
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Text, DateTime, Index, UniqueConstraint
+    create_engine, Column, Integer, String, Text, DateTime, Index, UniqueConstraint, Boolean, inspect, text
 )
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import JSON, Float
@@ -33,10 +33,18 @@ class Ticket(Base):
     status = Column(String(64), default="")
     priority = Column(String(64), default="")
     requester = Column(String(128), default="")
+    requester_role = Column(String(64), default="")
+    requester_email = Column(String(256), default="")
     assignee = Column(String(128), default="")
     labels = Column(Text, default="")                  # comma-separated for MVP
     url = Column(Text, default="")
     project = Column(String(64), default="")           # jira project key if any
+    submitter = Column(String(128), default="")
+    submitter_role = Column(String(64), default="")
+    submitter_email = Column(String(256), default="")
+    is_shared = Column(Boolean, nullable=True, index=True)
+    sharing_type = Column(String(32), default="")       # inbound|outbound|""
+    is_internal = Column(Boolean, nullable=True, index=True)  # None=unknown, False=external, True=internal
 
     source_created_at = Column(DateTime)
     source_updated_at = Column(DateTime)
@@ -80,7 +88,70 @@ class SyncState(Base):
     last_cursor = Column(String(256))                 # optional: for cursor-based APIs
     last_updated_at = Column(DateTime)  
     
+class TicketProductVertical(Base):
+    __tablename__ = "ticket_product_verticals"
+
+    id = Column(Integer, primary_key=True)
+    ticket_id = Column(Integer, index=True, unique=True)
+    vertical_slug = Column(String(128), index=True)
+    vertical_name = Column(String(256))
+    confidence = Column(Float, default=0.0)
+    explanation = Column(JSON)  # dict with matched keywords/rules
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+class TicketGoldLabel(Base):
+    __tablename__ = "ticket_gold_labels"
+
+    id = Column(Integer, primary_key=True)
+    ticket_id = Column(Integer, index=True, unique=True)
+    vertical_slug = Column(String(128), index=True)
+    vertical_name = Column(String(256))
+    reviewer = Column(String(128), default="")
+    note = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
 Base.metadata.create_all(bind=engine)              # incremental watermark
+
+# --- Lightweight migration helpers (SQLite/Postgres safe) ---
+def _ensure_ticket_is_internal_column():
+    try:
+        insp = inspect(engine)
+        cols = {c['name'] for c in insp.get_columns('tickets')}
+        if 'is_internal' not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE tickets ADD COLUMN is_internal BOOLEAN"))
+                # best-effort index (IF NOT EXISTS works on SQLite 3.8.0+ and Postgres)
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tickets_is_internal ON tickets(is_internal)"))
+    except Exception:
+        # Do not crash app startup on migration issues; continue without the column.
+        pass
+
+_ensure_ticket_is_internal_column()
+
+
+def _safe_add_column(table: str, col_sql: str, index_sql: str | None = None):
+    try:
+        insp = inspect(engine)
+        cols = {c['name'] for c in insp.get_columns(table)}
+        name = col_sql.split()[0].strip('"')
+        if name not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col_sql}"))
+                if index_sql:
+                    conn.execute(text(index_sql))
+    except Exception:
+        pass
+
+# Additional migration columns for transparency/auditing
+_safe_add_column('tickets', 'requester_role VARCHAR(64)')
+_safe_add_column('tickets', 'requester_email VARCHAR(256)')
+_safe_add_column('tickets', 'submitter VARCHAR(128)')
+_safe_add_column('tickets', 'submitter_role VARCHAR(64)')
+_safe_add_column('tickets', 'submitter_email VARCHAR(256)')
+_safe_add_column('tickets', 'is_shared BOOLEAN', "CREATE INDEX IF NOT EXISTS ix_tickets_is_shared ON tickets(is_shared)")
+_safe_add_column('tickets', 'sharing_type VARCHAR(32)')
 
 def upsert_ticket(session, payload: dict):
     """
@@ -108,3 +179,43 @@ def get_or_create_sync_state(session, source: str) -> SyncState:
         st = SyncState(source=source)
         session.add(st)
     return st
+
+def upsert_ticket_vertical(session, ticket_id: int, vertical_slug: str, vertical_name: str, confidence: float, explanation: dict | None = None):
+    existing = session.query(TicketProductVertical).filter_by(ticket_id=ticket_id).one_or_none()
+    if existing:
+        existing.vertical_slug = vertical_slug
+        existing.vertical_name = vertical_name
+        existing.confidence = float(confidence or 0.0)
+        existing.explanation = explanation or {}
+        existing.updated_at = datetime.utcnow()
+        return existing
+    else:
+        tv = TicketProductVertical(
+            ticket_id=ticket_id,
+            vertical_slug=vertical_slug,
+            vertical_name=vertical_name,
+            confidence=float(confidence or 0.0),
+            explanation=explanation or {},
+        )
+        session.add(tv)
+        return tv
+
+def upsert_gold_label(session, ticket_id: int, vertical_slug: str, vertical_name: str, reviewer: str = "", note: str = ""):
+    existing = session.query(TicketGoldLabel).filter_by(ticket_id=ticket_id).one_or_none()
+    if existing:
+        existing.vertical_slug = vertical_slug
+        existing.vertical_name = vertical_name
+        existing.reviewer = reviewer or existing.reviewer
+        existing.note = note or existing.note
+        existing.updated_at = datetime.utcnow()
+        return existing
+    else:
+        gl = TicketGoldLabel(
+            ticket_id=ticket_id,
+            vertical_slug=vertical_slug,
+            vertical_name=vertical_name,
+            reviewer=reviewer,
+            note=note,
+        )
+        session.add(gl)
+        return gl
