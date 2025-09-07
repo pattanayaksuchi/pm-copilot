@@ -51,7 +51,7 @@ Use `.env.example` as a template:
 - Sync: `POST /sync/run`, `POST /sync/jira`, `POST /sync/zendesk`, `POST /sync/slack`
 - Themes (with filters): `GET /insights/themes/v2?days&k&source&kind&vertical`
 - Top 10 (overview): `GET /insights/top10?days&k`
-- Theme Suggestions: `GET /insights/theme_suggestions?days&k&top_n`
+- Theme Suggestions: `GET /insights/theme_suggestions?days&k&top_n&include_internal`
 - Export CSVs: `GET /export/top10.csv?days&k&source&kind&vertical`, `GET /export/themes.csv?days&k&source&kind&vertical`
   - CSVs now include a `product_vertical` column per ticket where classified (confidence ≥ 0.65)
   - All insights endpoints accept `include_internal=false|true` (default false) to include/exclude internal Zendesk tickets.
@@ -64,7 +64,8 @@ Notes:
 - `kind` is one of `all|issue|feature_request|unknown`
 
 **Frontend UI**
-- Controls for days, clusters (`k`), source and type filters; plus product vertical filter
+- Controls: Days, Number of themes (instead of raw K), Source, Item type, Product vertical
+- Suggested Themes: panel to load prioritized themes with rationale and example tickets
 - Toggle: "Include internal" checkbox (off by default) to focus on external/customer tickets.
 - Buttons:
   - Refresh: loads themes and top lists via `/insights/themes/v2`
@@ -83,7 +84,7 @@ Notes:
   - Use `Load Top 10` to refresh only the Top 10 lists.
 - Explore themes:
   - Each theme shows a hint, type, and size; expand to see tickets with links.
-  - Hit `GET /insights/theme_suggestions` (or add a simple UI call) to see prioritized PM suggestions with rationale.
+  - Use the Suggested Themes panel (click "Load") for prioritized PM suggestions with rationale.
 - Export:
   - `Export Top 10 CSV` → columns: `rank,type,title,source,product_vertical,url`.
   - `Export Themes CSV` → columns: `theme_label,type,size,hint,ticket_id,ticket_title,ticket_source,product_vertical,ticket_url`.
